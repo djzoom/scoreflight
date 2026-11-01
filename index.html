@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScoreFlight — 乐谱飞越 & 八音盒</title>
+<meta name="description" content="Three.js music visualization: fly over an engraved score as the notes light up, or watch the same score played on a 3D music box.">
+<style>
+  :root { --fg: #e8e4dc; --dim: #9a958c; --bg: rgba(14,14,16,.72); --accent: #ffb347; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0f0e10; color: var(--fg); font: 14px/1.4 -apple-system, "PingFang SC", "Noto Sans SC", "Helvetica Neue", sans-serif; overflow: hidden; }
+  canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  header { position: fixed; top: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 16px; background: linear-gradient(180deg, rgba(0,0,0,.65), rgba(0,0,0,0)); pointer-events: none; }
+  header > * { pointer-events: auto; }
+  h1 { margin: 0 8px 0 0; font-size: 16px; font-weight: 600; letter-spacing: .04em; }
+  h1 small { color: var(--dim); font-weight: 400; margin-left: 8px; }
+  select, button, input[type=range] { font: inherit; color: var(--fg); }
+  select { background: var(--bg); border: 1px solid #333; border-radius: 6px; padding: 6px 10px; max-width: 48vw; }
+  .modes { display: inline-flex; background: var(--bg); border: 1px solid #333; border-radius: 6px; overflow: hidden; }
+  .modes button { background: transparent; border: 0; padding: 6px 12px; cursor: pointer; color: var(--dim); }
+  .modes button.active { background: #2a2622; color: var(--accent); }
+  button#play { width: 38px; height: 34px; border-radius: 6px; border: 1px solid #333; background: var(--bg); cursor: pointer; font-size: 14px; }
+  .ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); background: var(--bg); border: 1px solid #333; border-radius: 6px; padding: 4px 10px; }
+  .ctl input[type=range] { width: 90px; accent-color: var(--accent); }
+  .ctl input[type=checkbox] { accent-color: var(--accent); }
+  #time { font-variant-numeric: tabular-nums; color: var(--dim); }
+  footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px 14px; background: linear-gradient(0deg, rgba(0,0,0,.7), rgba(0,0,0,0)); }
+  #progress { height: 6px; background: rgba(255,255,255,.12); border-radius: 3px; cursor: pointer; margin-bottom: 8px; }
+  #fill { height: 100%; width: 0; background: var(--accent); border-radius: 3px; }
+  .row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; color: var(--dim); font-size: 13px; }
+  #legend span { margin-right: 14px; }
+  #legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; box-shadow: 0 0 8px currentColor; }
+  #loader { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(10,10,12,.78); z-index: 5; transition: opacity .3s; }
+  #loader.hidden { opacity: 0; pointer-events: none; }
+  #loader div { padding: 14px 22px; border: 1px solid #333; border-radius: 8px; background: #141316; }
+  kbd { font: 12px ui-monospace, monospace; color: var(--dim); border: 1px solid #333; border-radius: 4px; padding: 0 4px; }
+  a { color: var(--dim); }
+  @media (max-width: 720px) { .hint { display: none; } select { max-width: 70vw; } }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body data-mode="score">
+<canvas id="view"></canvas>
+
+<header>
+  <h1>ScoreFlight <small>乐谱飞越 · 八音盒</small></h1>
+  <select id="piece" title="选曲"></select>
+  <div class="modes">
+    <button data-mode="score" class="active" title="快捷键 1">乐谱飞越</button>
+    <button data-mode="musicbox" title="快捷键 2">八音盒</button>
+  </div>
+  <button id="play" title="播放">▶</button>
+  <span id="time">0:00 / 0:00</span>
+  <label class="ctl">速度 <input id="rate" type="range" min="0.5" max="1.5" step="0.05" value="1"><span id="rateVal">1.00×</span></label>
+  <label class="ctl">音量 <input id="volume" type="range" min="0" max="1" step="0.02" value="0.8"></label>
+  <label class="ctl" title="快捷键 c"><input id="follow" type="checkbox" checked> 镜头自动</label>
+</header>
+
+<footer>
+  <div id="progress"><div id="fill"></div></div>
+  <div class="row">
+    <span id="info"></span>
+    <span id="legend"></span>
+    <span class="hint"><kbd>空格</kbd> 播放 · <kbd>←</kbd><kbd>→</kbd> 快进 · <kbd>1</kbd><kbd>2</kbd> 切换模式 · 关闭「镜头自动」后可拖拽旋转 · <a href="https://github.com/djzoom/scoreflight">源码</a></span>
+  </div>
+</footer>
+
+<div id="loader"><div id="loaderText">正在加载…</div></div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

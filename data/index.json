@@ -1,0 +1,65 @@
+[
+ {
+  "id": "bach-bwv846",
+  "title": "Prelude in C major, BWV 846",
+  "composer": "J. S. Bach",
+  "family": "keyboard",
+  "year": 1722,
+  "duration": 122.667,
+  "staves": 2
+ },
+ {
+  "id": "joplin-maple-leaf-rag",
+  "title": "Maple Leaf Rag",
+  "composer": "Scott Joplin",
+  "family": "keyboard",
+  "year": 1899,
+  "duration": 154.799,
+  "staves": 2
+ },
+ {
+  "id": "verdi-la-donna-e-mobile",
+  "title": "La donna è mobile (Rigoletto)",
+  "composer": "Giuseppe Verdi",
+  "family": "keyboard",
+  "year": 1851,
+  "duration": 41.6,
+  "staves": 2
+ },
+ {
+  "id": "chopin-mazurka-op6-no2",
+  "title": "Mazurka in C-sharp minor, Op. 6 No. 2",
+  "composer": "Frédéric Chopin",
+  "family": "keyboard",
+  "year": 1832,
+  "duration": 96.19,
+  "staves": 2
+ },
+ {
+  "id": "handel-lascia-chio-pianga",
+  "title": "Lascia ch'io pianga (Rinaldo)",
+  "composer": "G. F. Handel",
+  "family": "vocal",
+  "year": 1711,
+  "duration": 150.0,
+  "staves": 3
+ },
+ {
+  "id": "haydn-op1-no1-i",
+  "title": "String Quartet Op. 1 No. 1, I. Presto",
+  "composer": "Joseph Haydn",
+  "family": "strings",
+  "year": 1762,
+  "duration": 64.125,
+  "staves": 4
+ },
+ {
+  "id": "beethoven-op18-no1-i",
+  "title": "String Quartet Op. 18 No. 1, I. Allegro con brio",
+  "composer": "Ludwig van Beethoven",
+  "family": "strings",
+  "year": 1800,
+  "duration": 581.818,
+  "staves": 4
+ }
+]
