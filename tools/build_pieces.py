@@ -18,7 +18,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 import verovio
-from music21 import corpus, converter
+from music21 import bar, corpus, converter, repeat
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 DATA = os.path.join(ROOT, "data")
@@ -55,6 +55,22 @@ VRV_OPTIONS = {
 def build(piece_id, src, title, composer, family, year):
     print(f"== {piece_id}: {title}")
     score = corpus.parse(src) if not os.path.exists(src) else converter.parse(src)
+    # Write repeats out in full. Verovio's timemap advances time over a repeat
+    # without re-emitting the notes, which left silent gaps in playback.
+    try:
+        expanded = score.expandRepeats()
+        if expanded.duration.quarterLength > score.duration.quarterLength:
+            print(f"   repeats expanded: {score.duration.quarterLength} -> {expanded.duration.quarterLength} quarters")
+            score = expanded
+    except Exception as e:  # malformed repeat marks: drop them and play the music once as written
+        n = 0
+        for m in score.recurse().getElementsByClass("Measure"):
+            for side in ("leftBarline", "rightBarline"):
+                if isinstance(getattr(m, side), bar.Repeat):
+                    setattr(m, side, bar.Barline("regular")); n += 1
+        for r in list(score.recurse().getElementsByClass(repeat.RepeatExpression)):
+            r.activeSite.remove(r); n += 1
+        print(f"   repeats could not be expanded ({e}); removed {n} repeat marks")
     xml_path = score.write("musicxml")
 
     tk = verovio.toolkit()
@@ -76,10 +92,11 @@ def build(piece_id, src, title, composer, family, year):
 
     # ---- timing from verovio
     timemap = tk.renderToTimemap()
+    # a note inside a repeated section is switched on once per pass, so keep every onset
     onsets = {}
     for ev in timemap:
         for nid in ev.get("on", []):
-            onsets[nid] = ev["tstamp"] / 1000.0
+            onsets.setdefault(nid, []).append(ev["tstamp"] / 1000.0)
     midi = {}
     for nid in onsets:
         v = tk.getMIDIValuesForElement(nid)
@@ -131,15 +148,16 @@ def build(piece_id, src, title, composer, family, year):
                     x = float(tm.group(1)) + mx
                     y = float(tm.group(2)) + my
                     v = midi[nid]
-                    notes.append([
-                        round(onsets[nid], 4),
-                        round(v["duration"] / 1000.0, 4),
-                        v["pitch"],
-                        staff_idx,
-                        round(x, 1),
-                        round(y, 1),
-                        sys_idx,
-                    ])
+                    for onset in onsets[nid]:
+                        notes.append([
+                            round(onset, 4),
+                            round(v["duration"] / 1000.0, 4),
+                            v["pitch"],
+                            staff_idx,
+                            round(x, 1),
+                            round(y, 1),
+                            sys_idx,
+                        ])
                 staff_idx += 1
         if xs:
             systems.append({

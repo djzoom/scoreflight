@@ -23,7 +23,7 @@
   "composer": "Giuseppe Verdi",
   "family": "keyboard",
   "year": 1851,
-  "duration": 41.6,
+  "duration": 83.6,
   "staves": 2
  },
  {
@@ -32,7 +32,7 @@
   "composer": "Frédéric Chopin",
   "family": "keyboard",
   "year": 1832,
-  "duration": 96.19,
+  "duration": 71.428,
   "staves": 2
  },
  {
@@ -41,7 +41,7 @@
   "composer": "G. F. Handel",
   "family": "vocal",
   "year": 1711,
-  "duration": 150.0,
+  "duration": 216.0,
   "staves": 3
  },
  {
@@ -50,7 +50,7 @@
   "composer": "Joseph Haydn",
   "family": "strings",
   "year": 1762,
-  "duration": 64.125,
+  "duration": 92.625,
   "staves": 4
  },
  {
