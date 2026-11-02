@@ -4,6 +4,7 @@ import { staffColor, glowTexture, rasterizeSvg, clamp, damp } from "./util.js";
 
 const WORLD_PER_PX = 0.02; // 1 Verovio px (outer viewBox) = 0.02 world units
 const PIXEL_BUDGET = 42e6;  // keep the rasterised score under ~170 MB of RGBA
+const WHITE = new THREE.Color(1, 1, 1);
 
 /**
  * Fly-over mode: the engraved score lies on a dark stone floor; the camera
@@ -25,7 +26,6 @@ export class ScoreScene {
     this.group = new THREE.Group();
     this.scene.add(this.group);
     this.glow = glowTexture();
-    this.sprites = [];
     this.activeFrom = 0;
     this.tmp = new THREE.Vector3();
     this.camPos = new THREE.Vector3();
@@ -81,31 +81,53 @@ export class ScoreScene {
       this.group.add(mesh);
     }
 
-    // note sprites (inner units -> outer px -> world)
+    // notes (inner units -> outer px -> world). Each note gets a small emissive
+    // disc lying flat on the page (the notehead itself turning into a lamp) and a
+    // soft flat halo; the brightest ones also drive real point lights so the
+    // engraving around them is lit.
     const k = outer.w / inner.w;
-    const mat = {};
-    const spriteSize = 0.55;
     this.notes = piece.notes;
-    this.sprites = new Array(this.notes.length);
-    this.notePos = new Array(this.notes.length);
-    for (let i = 0; i < this.notes.length; i++) {
+    const N = this.notes.length;
+    this.notePos = new Array(N);
+    this.noteColor = new Array(N);
+    const headR = 0.085;
+    const coreGeo = new THREE.CircleGeometry(headR, 20);
+    coreGeo.rotateX(-Math.PI / 2);
+    const haloGeo = new THREE.PlaneGeometry(1, 1);
+    haloGeo.rotateX(-Math.PI / 2);
+    this.core = new THREE.InstancedMesh(coreGeo,
+      new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, depthWrite: false }), N);
+    this.halo = new THREE.InstancedMesh(haloGeo,
+      new THREE.MeshBasicMaterial({ map: this.glow, color: "#ffffff", transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }), N);
+    this.core.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.halo.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.core.frustumCulled = this.halo.frustumCulled = false;
+    this.core.renderOrder = 2; this.halo.renderOrder = 1;
+    const m = new THREE.Matrix4();
+    const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    const black = new THREE.Color(0, 0, 0);
+    for (let i = 0; i < N; i++) {
       const n = this.notes[i];
-      const staff = n[3];
-      if (!mat[staff]) {
-        mat[staff] = new THREE.SpriteMaterial({
-          map: this.glow, color: staffColor(staff), blending: THREE.AdditiveBlending,
-          depthWrite: false, transparent: true, opacity: 0,
-        });
-      }
-      const s = new THREE.Sprite(mat[staff].clone());
-      const p = toWorld(n[4] * k, n[5] * k);
-      p.y = 0.03;
-      s.position.copy(p);
-      s.scale.setScalar(spriteSize);
-      s.visible = false;
+      const p = toWorld(n[4] * k + 4, n[5] * k); // +4px: the glyph's x is its left edge
+      p.y = 0.012;
       this.notePos[i] = p;
-      this.sprites[i] = s;
-      this.group.add(s);
+      this.noteColor[i] = staffColor(n[3]);
+      this.core.setMatrixAt(i, zero);
+      this.halo.setMatrixAt(i, zero);
+      this.core.setColorAt(i, black);
+      this.halo.setColorAt(i, black);
+    }
+    this.group.add(this.halo, this.core);
+    this.tmpM = m;
+    this.tmpC = new THREE.Color();
+
+    // a pool of real lights, handed to the most recently struck notes
+    this.lights = [];
+    for (let i = 0; i < 10; i++) {
+      const l = new THREE.PointLight("#ffffff", 0, 7, 2);
+      l.visible = false;
+      this.group.add(l);
+      this.lights.push(l);
     }
 
     // camera path: one keyframe per onset, (time -> position on the page)
@@ -181,32 +203,63 @@ export class ScoreScene {
     }
     this.lamp.position.set(p.x + 1, 3.2, p.z + 0.5);
 
-    // notes: fade in fast on attack, hold while sounding, decay after
-    const fade = 1.2;
+    // notes: flash on attack, glow while sounding, ember afterwards
+    const fade = 1.6;
     const notes = this.notes;
+    const M = this.tmpM, C = this.tmpC;
+    const zero = this.zeroM || (this.zeroM = new THREE.Matrix4().makeScale(0, 0, 0));
     if (t < this.lastT) { // seeked backwards
-      for (let i = this.activeFrom; i < notes.length; i++) { this.sprites[i].visible = false; }
+      for (let i = this.activeFrom; i < notes.length; i++) { this.core.setMatrixAt(i, zero); this.halo.setMatrixAt(i, zero); }
       this.activeFrom = 0;
     }
     this.lastT = t;
     while (this.activeFrom < notes.length && notes[this.activeFrom][0] + notes[this.activeFrom][1] + fade < t) {
-      this.sprites[this.activeFrom].visible = false;
+      this.core.setMatrixAt(this.activeFrom, zero);
+      this.halo.setMatrixAt(this.activeFrom, zero);
       this.activeFrom++;
     }
+    const lit = []; // candidates for real lights: [brightness, index]
     for (let i = this.activeFrom; i < notes.length; i++) {
       const n = notes[i];
       if (n[0] > t) break;
-      const s = this.sprites[i];
       const since = t - n[0];
-      const end = n[1];
+      const end = Math.max(0.12, n[1]);
       let a;
-      if (since < 0.05) a = since / 0.05;
-      else if (since < end) a = 1 - 0.35 * clamp((since - 0.05) / Math.max(0.3, end), 0, 1);
-      else a = 0.65 * Math.max(0, 1 - (since - end) / fade);
-      s.visible = a > 0.01;
-      s.material.opacity = a;
-      const size = 0.42 + 0.5 * a + (since < 0.12 ? 0.35 * (1 - since / 0.12) : 0);
-      s.scale.setScalar(size);
+      if (since < 0.04) a = since / 0.04;
+      else if (since < end) a = 1 - 0.3 * clamp((since - 0.04) / Math.max(0.4, end), 0, 1);
+      else a = 0.7 * Math.pow(Math.max(0, 1 - (since - end) / fade), 1.6);
+      const p = this.notePos[i], col = this.noteColor[i];
+      // core: the notehead burns white-hot at the attack, settles to its colour
+      const hot = since < 0.15 ? 1 - since / 0.15 : 0;
+      C.copy(col).lerp(WHITE, 0.55 * hot + 0.15).multiplyScalar(0.4 + 2.6 * a);
+      this.core.setColorAt(i, C);
+      M.makeScale(1 + 0.6 * hot, 1, 1 + 0.6 * hot).setPosition(p);
+      this.core.setMatrixAt(i, M);
+      // halo: a soft pool of colour on the paper
+      const r = 0.55 + 0.45 * a + 0.3 * hot;
+      C.copy(col).multiplyScalar(0.55 * a);
+      this.halo.setColorAt(i, C);
+      M.makeScale(r, 1, r).setPosition(p);
+      this.halo.setMatrixAt(i, M);
+      if (a > 0.05) lit.push([a * (1 + hot), i]);
+    }
+    this.core.instanceMatrix.needsUpdate = this.halo.instanceMatrix.needsUpdate = true;
+    this.core.instanceColor.needsUpdate = this.halo.instanceColor.needsUpdate = true;
+
+    // real lights for the brightest handful, so the engraving around them is lit
+    lit.sort((x, y) => y[0] - x[0]);
+    for (let j = 0; j < this.lights.length; j++) {
+      const l = this.lights[j];
+      if (j < lit.length) {
+        const [a, i] = lit[j];
+        l.position.copy(this.notePos[i]).setY(0.28);
+        l.color.copy(this.noteColor[i]);
+        l.intensity = 1.6 * a;
+        l.visible = true;
+      } else {
+        l.visible = false;
+        l.intensity = 0;
+      }
     }
   }
 
@@ -222,7 +275,7 @@ export class ScoreScene {
       if (obj.isMesh) obj.material.map?.dispose?.();
       obj.material?.dispose();
     }
-    this.sprites = [];
     this.keys = null;
+    this.lights = [];
   }
 }

@@ -3,7 +3,10 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { staffColor, glowTexture, woodTexture, clamp } from "./util.js";
 
-const TOOTH_SPACING = 0.085;
+const TOOTH_SPACING = 0.1;
+const SECONDS_PER_TURN = 45;   // roughly one minute of music per revolution, like the real thing
+const MAX_TURNS = 10;          // rows of pins that fit between two teeth
+const SHIFT_FRAC = 0.05;       // the last 5% of each turn is where the cylinder slides over
 
 /**
  * Music-box mode: the score is "written" onto a brass cylinder as pins, one
@@ -51,16 +54,26 @@ export class MusicBoxScene {
     this.piece = piece;
     this.onProgress("正在把乐谱写进滚筒…");
     const notes = piece.notes;
-    const T = piece.duration + 1.5; // one full turn = the whole piece (+ a pause)
-    this.T = T;
 
     // --- teeth: one per distinct pitch
     const pitches = [...new Set(notes.map(n => n[2]))].sort((a, b) => a - b);
     const N = pitches.length;
     const toothIndex = new Map(pitches.map((p, i) => [p, i]));
     const combLen = N * TOOTH_SPACING;
-    const R = clamp(Math.max(combLen * 0.42, 0.6 + piece.duration / 220), 0.75, 2.2);
-    const L = combLen + 0.7;
+
+    // --- how the tune is laid out on the cylinder
+    // Like a real multi-air box: the piece is split over K revolutions. Pins of
+    // revolution r sit r*(pitch/K) to the side of the tooth; at the end of each
+    // turn a snail cam shifts the cylinder by one such step, so the next row
+    // of pins lines up with the teeth while the others pass between them.
+    // The shift is done "semi-helicoidally" — pins in the last few degrees of
+    // a turn are laid on a diagonal — so the music never has to pause.
+    const K = clamp(Math.ceil(piece.duration / SECONDS_PER_TURN), 1, MAX_TURNS);
+    const Tturn = (piece.duration + 1.0) / K;      // seconds per revolution
+    const step = TOOTH_SPACING / K;                // axial shift per revolution
+    this.K = K; this.Tturn = Tturn; this.step = step;
+    const R = clamp(combLen * 0.26, 0.7, 1.2);
+    const L = combLen + 0.8;
     this.R = R; this.L = L;
 
     const zOf = (j) => (j - (N - 1) / 2) * TOOTH_SPACING;
@@ -73,34 +86,52 @@ export class MusicBoxScene {
     const cyl = new THREE.Mesh(new THREE.CylinderGeometry(R, R, L, 128, 1), this.brass);
     cyl.rotation.x = Math.PI / 2;
     drum.add(cyl);
-    for (const s of [-1, 1]) { // end caps and axle
+    for (const s of [-1, 1]) { // end caps
       const cap = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.35, R * 0.35, 0.12, 48), this.darkSteel);
       cap.rotation.x = Math.PI / 2; cap.position.z = s * (L / 2 + 0.06);
       drum.add(cap);
     }
-    const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, L + 1.2, 24), this.steel);
+    const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, L + 2.4, 24), this.steel);
     axle.rotation.x = Math.PI / 2;
+    axle.position.z = 0.6;
     drum.add(axle);
 
-    // pins: angle encodes time, row encodes pitch
-    const pinGeo = new THREE.CylinderGeometry(0.014, 0.018, 0.13, 8);
-    pinGeo.translate(0, 0.065, 0);
+    // pins: angle = time within the turn, z = tooth + row offset
+    const pinR = clamp(step * 0.32, 0.004, 0.014);
+    const pinGeo = new THREE.CylinderGeometry(pinR, pinR * 1.25, 0.11, 6);
+    pinGeo.translate(0, 0.055, 0);
     const pins = new THREE.InstancedMesh(pinGeo, this.steel, notes.length);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), scl = new THREE.Vector3(1, 1, 1);
     const up = new THREE.Vector3(0, 1, 0);
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
-      const theta = Math.PI - (n[0] / T) * Math.PI * 2;
+      const phase = (n[0] % Tturn) / Tturn;
+      const theta = Math.PI - phase * Math.PI * 2;
       const dir = new THREE.Vector3(Math.cos(theta), Math.sin(theta), 0);
       pos.copy(dir).multiplyScalar(R - 0.01);
-      pos.z = zOf(toothIndex.get(n[2]));
+      pos.z = zOf(toothIndex.get(n[2])) + (this.rowAt(n[0]) - (K - 1) / 2) * step;
       q.setFromUnitVectors(up, dir);
       m.compose(pos, q, scl);
       pins.setMatrixAt(i, m);
     }
     pins.instanceMatrix.needsUpdate = true;
     drum.add(pins);
+    // faint helper lines: one ring per revolution boundary is where the shift happens
     this.group.add(drum);
+
+    // --- snail cam + follower on the far end: steps the cylinder sideways
+    this.cam = this.makeSnailCam(K, 0.34, 0.08);
+    this.cam.position.set(0, 0, L / 2 + 1.05);
+    this.group.add(this.cam);
+    const follower = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.3), this.darkSteel);
+    follower.position.set(0, 0, L / 2 + 0.78);
+    this.follower = follower;
+    this.group.add(follower);
+    const spring = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.5, 12, 1, true),
+      new THREE.MeshStandardMaterial({ color: "#8d9096", metalness: 0.8, roughness: 0.5, wireframe: true }));
+    spring.rotation.x = Math.PI / 2;
+    spring.position.set(0, 0, -L / 2 - 0.42);
+    this.group.add(spring);
 
     // --- comb
     this.teeth = [];
@@ -122,18 +153,18 @@ export class MusicBoxScene {
       const len = maxLen - (maxLen - minLen) * (j / Math.max(1, N - 1));
       const z = zOf(j);
       // fixed root
-      const root = new THREE.Mesh(new THREE.BoxGeometry(maxLen - len + 0.001, 0.07, TOOTH_SPACING * 0.78), this.darkSteel);
+      const root = new THREE.Mesh(new THREE.BoxGeometry(maxLen - len + 0.001, 0.07, TOOTH_SPACING * 0.5), this.darkSteel);
       root.position.set(plateX1 + (maxLen - len) / 2, 0, z);
       comb.add(root);
       // free tooth, pivot at its root
       const pivot = new THREE.Group();
       pivot.position.set(tipX - len, 0, z);
-      const tooth = new THREE.Mesh(new THREE.BoxGeometry(len, 0.045, TOOTH_SPACING * 0.78), toothMat());
+      const tooth = new THREE.Mesh(new THREE.BoxGeometry(len, 0.045, TOOTH_SPACING * 0.5), toothMat());
       tooth.position.x = len / 2;
       pivot.add(tooth);
       if (j < N * 0.45) { // lead weights under the bass teeth
         const w = 0.16 * (1 - j / (N * 0.45)) + 0.05;
-        const weight = new THREE.Mesh(new THREE.BoxGeometry(w, 0.09, TOOTH_SPACING * 0.78), this.darkSteel);
+        const weight = new THREE.Mesh(new THREE.BoxGeometry(w, 0.09, TOOTH_SPACING * 0.5), this.darkSteel);
         weight.position.set(len - w / 2 - 0.02, -0.065, 0);
         pivot.add(weight);
       }
@@ -150,12 +181,12 @@ export class MusicBoxScene {
     // --- bearings, governor
     for (const s of [-1, 1]) {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.22, R + 0.35, 0.16), this.brass);
-      post.position.set(0, -(R + 0.35) / 2 + 0.05, s * (L / 2 + 0.3));
+      post.position.set(0, -(R + 0.35) / 2 + 0.05, s * (L / 2 + 0.45));
       this.group.add(post);
     }
     this.gear = this.makeGear(0.42, 18);
     this.gear.rotation.x = Math.PI / 2;
-    this.gear.position.set(0, 0, L / 2 + 0.5);
+    this.gear.position.set(0, 0, -L / 2 - 0.75);
     this.group.add(this.gear);
     this.fan = new THREE.Group();
     for (let i = 0; i < 2; i++) {
@@ -163,11 +194,11 @@ export class MusicBoxScene {
       blade.rotation.z = i * Math.PI / 2;
       this.fan.add(blade);
     }
-    this.fan.position.set(R * 0.9, -0.2, L / 2 + 0.75);
+    this.fan.position.set(R * 0.9, -0.2, -L / 2 - 0.95);
     this.group.add(this.fan);
 
     // --- wooden box
-    const boxW = 2 * R + 3.0, boxD = L + 2.0, wall = 0.14;
+    const boxW = 2 * R + 3.0, boxD = L + 3.2, wall = 0.14;
     const floorY = -R - 0.55;
     const wallTop = -R * 0.25;
     const woodMat = new THREE.MeshStandardMaterial({ map: this.wood, roughness: 0.55, metalness: 0.02 });
@@ -242,6 +273,38 @@ export class MusicBoxScene {
     return new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ map: tex, roughness: 1, envMapIntensity: 0.15 }));
   }
 
+  /** Which pin row (0..K-1) is under the teeth at music time t — continuous,
+   *  with the shift eased over the last SHIFT_FRAC of every revolution. */
+  rowAt(t) {
+    const Tturn = this.Tturn;
+    const r = Math.floor(t / Tturn);
+    const phase = t / Tturn - r;
+    const u = clamp((phase - (1 - SHIFT_FRAC)) / SHIFT_FRAC, 0, 1);
+    const ease = u * u * (3 - 2 * u);
+    return Math.min(r + ease, this.K - 1);
+  }
+
+  /** Stepped snail cam with K steps (last step drops back to the start). */
+  makeSnailCam(K, r0, dr) {
+    const shape = new THREE.Shape();
+    const segs = 24;
+    for (let k = 0; k < K; k++) {
+      const rad = r0 + k * dr;
+      for (let i = 0; i <= segs; i++) {
+        const a = ((k + i / segs) / K) * Math.PI * 2;
+        const x = Math.cos(a) * rad, y = Math.sin(a) * rad;
+        if (k === 0 && i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+      }
+    }
+    shape.closePath();
+    const hole = new THREE.Path();
+    hole.absarc(0, 0, 0.07, 0, Math.PI * 2, true);
+    shape.holes.push(hole);
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.1, bevelEnabled: false });
+    geo.translate(0, 0, -0.05);
+    return new THREE.Mesh(geo, this.brass);
+  }
+
   makeGear(r, teeth) {
     const shape = new THREE.Shape();
     const steps = teeth * 4;
@@ -274,7 +337,11 @@ export class MusicBoxScene {
 
   update(t, dt, playing) {
     if (!this.drum) return;
-    this.drum.rotation.z = (t / this.T) * Math.PI * 2;
+    this.drum.rotation.z = (t / this.Tturn) * Math.PI * 2;
+    const row = this.rowAt(t);
+    this.drum.position.z = -(row - (this.K - 1) / 2) * this.step;
+    this.cam.rotation.z = -(row / this.K) * Math.PI * 2;
+    this.follower.position.z = this.L / 2 + 0.78 - (row - (this.K - 1) / 2) * this.step;
     this.gear.rotation.z += dt * (playing ? 1.2 : 0);
     this.fan.rotation.x += dt * (playing ? 18 : 0);
     this.controls.update();

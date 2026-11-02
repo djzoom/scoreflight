@@ -12,7 +12,7 @@ const $ = (s) => document.querySelector(s);
 const ui = {
   piece: $("#piece"), play: $("#play"), time: $("#time"), rate: $("#rate"), rateVal: $("#rateVal"),
   volume: $("#volume"), follow: $("#follow"), progress: $("#progress"), fill: $("#fill"),
-  legend: $("#legend"), info: $("#info"), loader: $("#loader"), loaderText: $("#loaderText"),
+  legend: $("#legend"), turn: $("#turn"), info: $("#info"), loader: $("#loader"), loaderText: $("#loaderText"),
   modeButtons: [...document.querySelectorAll("[data-mode]")], canvas: $("#view"),
 };
 
@@ -188,6 +188,11 @@ function frame() {
   if (piece) {
     ui.time.textContent = `${fmt(t)} / ${fmt(piece.duration)}`;
     ui.fill.style.width = `${(100 * t / piece.duration).toFixed(2)}%`;
+    const mb = scenes.musicbox;
+    if (mode === "musicbox" && mb.K) {
+      ui.turn.hidden = false;
+      ui.turn.textContent = `滚筒第 ${Math.min(mb.K, Math.floor(t / mb.Tturn) + 1)} / ${mb.K} 圈 · 每圈 ${Math.round(mb.Tturn)} 秒`;
+    } else ui.turn.hidden = true;
   }
 }
 
