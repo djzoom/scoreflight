@@ -1,88 +1,101 @@
 #!/usr/bin/env python3
 """
-Encode ScoreFlight pieces (data/<id>/notes.json) into the Cantus flash format (CNT2).
+Encode ScoreFlight pieces (data/<id>/notes.json) into the Cantus flash format (CNT3).
 
-Cantus has 8 square-wave voices (time-multiplexed on one adder). The encoder,
-not the chip, decides which voice plays each note. If a piece ever needs more
-than 8 at once, the top line (melody) and the bass are kept; inner notes are
-dropped, or steal a voice from an older inner note.
+Cantus (ICS55 version) has 16 two-operator FM voices, 8 built-in patches,
+stereo output and a MIDI UART input. Voice allocation now happens on the chip,
+so a flash file is simply a timed MIDI message stream: the chip feeds flash
+bytes and UART bytes into the same MIDI parser.
 
-File format "CNT2" (little endian):
-  magic   4 bytes  "CNT2"
-  count   u16      number of note events
-  length  u32      piece length in ms
-  events  count ×  varint(delta ticks, 1 tick = 10 ms)
-                   u8  (voice bit 2) << 7 | pitch (MIDI 0–127)
-                   u8  (voice bits 1–0) << 6 | duration index (6 bits, log table)
-Duration table: DUR[k] = 0.03 s × (8 / 0.03)^(k / 63), k = 0..63.
+File format "CNT3":
+  magic    4 bytes  "CNT3"
+  length   u32 LE   piece length in ms
+  events   repeated:
+             varint  delay before this message, in ms (7 bits per byte, MSB = more)
+             MIDI channel message, running status allowed:
+               0x9n note velocity     note on (velocity 0 = note off)
+               0xCn program           patch 0–7 (see PATCHES)
+               0xBn 10 value          pan, 0 = left, 64 = centre, 127 = right
+               0xBn 7  value          channel volume
+           ends with  varint 0, 0xFF  (end of piece)
 """
 import base64
 import json
-import math
 import os
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-VOICES = 8
-TICK = 0.01
-DUR = [0.03 * (8 / 0.03) ** (k / 63) for k in range(64)]
+PATCHES = ["羽管键琴", "钢琴", "管风琴", "弦乐", "长笛", "八音盒", "竖琴", "方波"]
+HARPSI, PIANO, ORGAN, STRINGS, FLUTE, MUSICBOX, HARP, SQUARE = range(8)
+
+# per piece: (program, pan) for each staff, top staff first
+ARRANGE = {
+    "bach-bwv846": [(HARPSI, 72), (HARPSI, 56)],
+    "joplin-maple-leaf-rag": [(PIANO, 70), (PIANO, 58)],
+    "verdi-la-donna-e-mobile": [(PIANO, 70), (PIANO, 58)],
+    "chopin-mazurka-op6-no2": [(PIANO, 70), (PIANO, 58)],
+    "handel-lascia-chio-pianga": [(FLUTE, 64), (HARPSI, 44), (HARPSI, 84)],
+    "haydn-op1-no1-i": [(STRINGS, 28), (STRINGS, 50), (STRINGS, 80), (STRINGS, 100)],
+    "beethoven-op18-no1-i": [(STRINGS, 28), (STRINGS, 50), (STRINGS, 80), (STRINGS, 100)],
+}
 
 
-def dur_index(d):
-    return min(range(64), key=lambda k: abs(math.log(DUR[k]) - math.log(max(d, 0.03))))
+def varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return out
 
 
-def allocate(notes):
-    """notes: [t, d, midi, staff,...] -> list of [t, d, midi, voice], stats"""
-    groups = {}
-    for n in notes:
-        groups.setdefault(round(n[0], 3), []).append([n[0], n[1], n[2]])
-    out, active = [], [None] * VOICES   # active[v] = index into out
-    dropped = stolen = 0
-    for t in sorted(groups):
-        g = sorted(groups[t], key=lambda n: n[2])
-        order = [g[-1]] + ([g[0]] if len(g) > 1 else []) + g[1:-1][::-1]  # top, bass, then inner high→low
-        for n in order:
-            for v in range(VOICES):               # release finished voices
-                if active[v] is not None and out[active[v]][0] + out[active[v]][1] <= t + 1e-6:
-                    active[v] = None
-            free = [v for v in range(VOICES) if active[v] is None]
-            sounding = [out[active[v]][2] for v in range(VOICES) if active[v] is not None]
-            if free:
-                pref = 0 if n[2] <= min(sounding + [n[2]]) else (VOICES - 1 if n[2] >= max(sounding + [n[2]]) else 1)
-                v = min(free, key=lambda x: abs(x - pref))
-            else:
-                lo, hi = min(sounding), max(sounding)
-                if not (n[2] > hi or n[2] < lo or n is order[0]):
-                    dropped += 1
-                    continue
-                inner = [v for v in range(VOICES) if out[active[v]][2] not in (lo, hi)] or \
-                        [v for v in range(VOICES) if out[active[v]][2] != (hi if n[2] > hi else lo)]
-                v = min(inner, key=lambda x: out[active[x]][0])
-                out[active[v]][1] = max(0.03, t - out[active[v]][0])  # cut the old note short
-                stolen += 1
-            out.append([n[0], n[1], n[2], v])
-            active[v] = len(out) - 1
-    return out, dropped, stolen
+def encode(meta):
+    arr = ARRANGE.get(meta["id"], [(PIANO, 64)] * meta["staves"])
+    msgs = []  # (time_ms, order, bytes)
+    for ch, (prog, pan) in enumerate(arr):
+        msgs.append((0, 0, bytes([0xC0 | ch, prog])))
+        msgs.append((0, 0, bytes([0xB0 | ch, 10, pan])))
+        msgs.append((0, 0, bytes([0xB0 | ch, 7, 110 if ch == 0 else 96])))
+    for t, d, m, staff, *_ in meta["notes"]:
+        ch = min(staff, 15)
+        on, off = round(t * 1000), round((t + d) * 1000) - 4   # tiny gap so repeats re-strike
+        vel = 100 if staff == 0 else 84
+        msgs.append((on, 2, bytes([0x90 | ch, m, vel])))
+        msgs.append((max(on + 10, off), 1, bytes([0x90 | ch, m, 0])))   # offs before ons at equal times
+    msgs.sort(key=lambda x: (x[0], x[1]))
+    blob = bytearray(b"CNT3") + int(meta["duration"] * 1000).to_bytes(4, "little")
+    last_t, status = 0, None
+    for t, _, msg in msgs:
+        blob += varint(t - last_t)
+        last_t = t
+        if msg[0] == status:
+            blob += msg[1:]          # running status
+        else:
+            blob += msg
+            status = msg[0]
+    blob += varint(0) + b"\xff"
+    return bytes(blob), arr
 
 
-def encode(events, length):
-    b = bytearray(b"CNT2")
-    b += len(events).to_bytes(2, "little") + int(length * 1000).to_bytes(4, "little")
-    last = 0
-    for t, d, m, v in events:
-        tick = round(t / TICK)
-        delta = tick - last
-        last = tick
+def decode(blob):
+    """Reference parser (the chip does the same): returns [(time_ms, status, data...)]"""
+    assert blob[:4] == b"CNT3"
+    i, t, status, out = 8, 0, None, []
+    while True:
+        d = sh = 0
         while True:
-            byte = delta & 0x7F
-            delta >>= 7
-            b.append(byte | (0x80 if delta else 0))
-            if not delta:
+            x = blob[i]; i += 1
+            d |= (x & 0x7F) << sh; sh += 7
+            if not x & 0x80:
                 break
-        b.append(((v >> 2) << 7) | (m & 0x7F))
-        b.append(((v & 3) << 6) | dur_index(d))
-    return bytes(b)
+        t += d
+        if blob[i] == 0xFF:
+            return out
+        if blob[i] & 0x80:
+            status = blob[i]; i += 1
+        n = 1 if status & 0xF0 == 0xC0 else 2
+        out.append((t, status, *blob[i:i + n])); i += n
 
 
 def main():
@@ -90,16 +103,26 @@ def main():
     songs = []
     for p in index:
         meta = json.load(open(os.path.join(ROOT, "data", p["id"], "notes.json")))
-        ev, dropped, stolen = allocate(meta["notes"])
-        ev.sort(key=lambda e: (e[0], e[3]))
-        blob = encode(ev, meta["duration"])
+        meta["id"] = p["id"]
+        blob, arr = encode(meta)
+        ev = decode(blob)
+        ons = sum(1 for e in ev if e[1] & 0xF0 == 0x90 and e[3] > 0)
+        assert ons == len(meta["notes"]), (p["id"], ons, len(meta["notes"]))
+        # peak polyphony, to check against the chip's 16 voices
+        live, peak = set(), 0
+        for e in ev:
+            if e[1] & 0xF0 == 0x90:
+                key = (e[1] & 15, e[2])
+                if e[3]: live.add(key)
+                else: live.discard(key)
+                peak = max(peak, len(live))
         songs.append({
             "id": p["id"], "title": p["title"], "composer": p["composer"], "year": p["year"],
-            "notes": len(meta["notes"]), "kept": len(ev), "dropped": dropped, "stolen": stolen,
-            "bytes": len(blob), "duration": round(meta["duration"], 2),
+            "notes": len(meta["notes"]), "bytes": len(blob), "duration": round(meta["duration"], 2),
+            "peak": peak, "patches": [PATCHES[a[0]] for a in arr],
             "b64": base64.b64encode(blob).decode(),
         })
-        print(f'{p["id"]:28s} {len(meta["notes"]):5d} notes -> {len(blob):6d} B, dropped {dropped}, stolen {stolen}')
+        print(f'{p["id"]:28s} {len(meta["notes"]):5d} notes -> {len(blob):6d} B  peak polyphony {peak:2d}  {"/".join(sorted(set(songs[-1]["patches"])))}')
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "data", "cantus-songs.json")
     json.dump(songs, open(out, "w"), ensure_ascii=False)
     print("total", sum(s["bytes"] for s in songs), "B ->", out)
