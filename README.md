@@ -59,7 +59,7 @@ python3 tools/build_pieces.py
 - **调度**：`Transport` 以 `AudioContext.currentTime` 为时钟，提前 120 ms 调度音符，画面和声音共用同一时间轴。
 - **八音盒机械**：按真实滚筒八音盒建模。梳齿间距 P；曲子分成 K 圈（约每 45 秒一圈，最多 10 圈），第 r 圈的针放在齿旁 r·P/K 处；滚筒末端的蜗形凸轮（K 级台阶）每圈把滚筒轴向推进 P/K，弹簧顶回。换圈的横移放在每圈最后 5% 的转角里以 smoothstep 过渡，这段里的针沿斜线排布（即"半螺旋 semi-helicoidal"做法），音乐不中断。针用 `InstancedMesh`，四千多根也不卡；低音齿更长并带铅块配重，齿被拨后按阻尼正弦振动，高音齿振得更快。
 - **反复记号**：刻谱前先用 music21 `expandRepeats()` 把反复段落完整写出（否则 Verovio 的时间表在反复处只推进时间、不重发音符，会出现长段静音）；反复记号写得不规范、展开失败的曲子，去掉反复记号按写出来的弹一遍。
-- **Cantus 卡带格式**：`tools/encode_cantus.py` 把每首曲子编码成 Cantus 音乐芯片外置 Flash 用的 CNT1 二进制（每个音约 3 字节：变长时间差 + 音高 + 声部/时值），并按"旋律和低音优先"分配到 3 个声部，输出 `data/cantus-songs.json`。
+- **Cantus 卡带格式**：`tools/encode_cantus.py` 把每首曲子编码成 Cantus 音乐芯片外置 Flash 用的 CNT2 二进制（每个音约 3 字节：变长时间差 + 声部 3 bit + 音高 7 bit + 时值 6 bit），并分配到 8 个声部（超过 8 个同时发声时优先保留旋律和低音），输出 `data/cantus-songs.json`。
 - **乐谱飞越的光**：符头本身变成灯（平贴在谱面上的发光圆片 + 柔光晕，`InstancedMesh`），最亮的十来个音符再各配一盏真实点光源照亮周围的刻谱，经 bloom 后处理成光斑。
 
 ## 许可

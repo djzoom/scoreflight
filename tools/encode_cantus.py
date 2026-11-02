@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-Encode ScoreFlight pieces (data/<id>/notes.json) into the Cantus flash format.
+Encode ScoreFlight pieces (data/<id>/notes.json) into the Cantus flash format (CNT2).
 
-Cantus has 3 square-wave voices, so the encoder (not the chip) decides which
-voice plays each note. Priority: keep the top line (melody) and the bass;
-inner notes are dropped, or steal a voice from an older inner note.
+Cantus has 8 square-wave voices (time-multiplexed on one adder). The encoder,
+not the chip, decides which voice plays each note. If a piece ever needs more
+than 8 at once, the top line (melody) and the bass are kept; inner notes are
+dropped, or steal a voice from an older inner note.
 
-File format "CNT1" (little endian):
-  magic   4 bytes  "CNT1"
+File format "CNT2" (little endian):
+  magic   4 bytes  "CNT2"
   count   u16      number of note events
   length  u32      piece length in ms
   events  count ×  varint(delta ticks, 1 tick = 10 ms)
-                   u8  pitch (MIDI 0–127)
-                   u8  voice << 6 | duration index (6 bits, log table)
+                   u8  (voice bit 2) << 7 | pitch (MIDI 0–127)
+                   u8  (voice bits 1–0) << 6 | duration index (6 bits, log table)
 Duration table: DUR[k] = 0.03 s × (8 / 0.03)^(k / 63), k = 0..63.
 """
 import base64
@@ -22,7 +23,7 @@ import os
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-VOICES = 3
+VOICES = 8
 TICK = 0.01
 DUR = [0.03 * (8 / 0.03) ** (k / 63) for k in range(64)]
 
@@ -66,7 +67,7 @@ def allocate(notes):
 
 
 def encode(events, length):
-    b = bytearray(b"CNT1")
+    b = bytearray(b"CNT2")
     b += len(events).to_bytes(2, "little") + int(length * 1000).to_bytes(4, "little")
     last = 0
     for t, d, m, v in events:
@@ -79,8 +80,8 @@ def encode(events, length):
             b.append(byte | (0x80 if delta else 0))
             if not delta:
                 break
-        b.append(m & 0x7F)
-        b.append((v << 6) | dur_index(d))
+        b.append(((v >> 2) << 7) | (m & 0x7F))
+        b.append(((v & 3) << 6) | dur_index(d))
     return bytes(b)
 
 
